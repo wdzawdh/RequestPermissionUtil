@@ -1,10 +1,10 @@
-package com.cw.requestpermissionutil;
+package com.cw.requestpermissionutil.permission;
 
 public class PermissionInfo {
     private String mName;
     private String mShortName;
 
-    PermissionInfo(String name) {
+    public PermissionInfo(String name) {
         this.mName = name;
         this.mShortName = name.substring(name.lastIndexOf(".") + 1);
     }

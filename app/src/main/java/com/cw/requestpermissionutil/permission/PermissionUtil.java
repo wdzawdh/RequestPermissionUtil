@@ -1,11 +1,14 @@
-package com.cw.requestpermissionutil;
+package com.cw.requestpermissionutil.permission;
 
 import android.annotation.TargetApi;
 import android.app.Activity;
+import android.app.AppOpsManager;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Looper;
+import android.support.v4.app.ActivityCompat;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -15,6 +18,7 @@ import java.util.List;
  */
 public class PermissionUtil {
 
+    final static String KEY_PERMISSION_TAG = "key_permission_tag";
     final static String KEY_PERMISSION_LIST = "key_permission_list";
     final static int PERMISSION_REQUEST_CODE = 201;//请求权限的请求码
 
@@ -30,28 +34,23 @@ public class PermissionUtil {
     private List<PermissionInfo> mPermissionListAccepted = new ArrayList<>();
 
     private List<String> mPermissions = new ArrayList<>();
-    private static PermissionUtil sInstance;
     private ResultCallBack mResultCallBack;
+    private Activity mActivity;
 
-    private PermissionUtil() {
-    }
-
-    static PermissionUtil getInstance() {
-        if (sInstance == null) {
-            synchronized (PermissionUtil.class) {
-                if (sInstance == null) {
-                    sInstance = new PermissionUtil();
-                }
-            }
-        }
-        return sInstance;
-    }
-
-    static Builder with(Activity activity) {
+    public static Builder with(Activity activity) {
         return new PermissionUtil.Builder(activity);
     }
 
-    static class Builder {
+    public static Builder with(Context actContext) {
+        try {
+            Activity activity = (Activity) actContext;
+            return new PermissionUtil.Builder(activity);
+        } catch (Exception e) {
+            throw new RuntimeException("actContext must be a activity");
+        }
+    }
+
+    public static class Builder {
 
         private Activity activity;
         private PermissionUtil permissionUtil;
@@ -59,19 +58,19 @@ public class PermissionUtil {
 
         Builder(Activity activity) {
             this.activity = activity;
-            permissionUtil = PermissionUtil.getInstance();
+            permissionUtil = new PermissionUtil();
         }
 
-        Builder add(String permissions) {
+        public Builder add(String permissions) {
             this.permissionsList.add(permissions);
             return this;
         }
 
-        Builder request() {
+        public Builder request() {
             return request(null);
         }
 
-        Builder request(ResultCallBack callBack) {
+        public Builder request(ResultCallBack callBack) {
             permissionUtil.request(activity, permissionsList, callBack);
             return this;
         }
@@ -82,6 +81,7 @@ public class PermissionUtil {
      * 用于activity中请求权限
      */
     private void request(Activity activity, List<String> permissions, ResultCallBack callBack) {
+        this.mActivity = activity;
         this.mResultCallBack = callBack;
         if (!checkSituation(permissions)) {
             return;
@@ -156,7 +156,20 @@ public class PermissionUtil {
         this.mPermissionListAccepted.clear();
 
         for (String permission : permissions) {
-            int result = checkSinglePermission(activity, permission);
+
+            int result;
+
+            switch (Build.MANUFACTURER) {
+                //适配小米权限申请
+                case "Xiaomi": {
+                    result = checkSinglePermissionForXiaoMi(activity, permission);
+                    break;
+                }
+                default: {
+                    result = checkSinglePermission(activity, permission);
+                }
+            }
+
             switch (result) {
                 case PERMISSION_GRANTED:
                     mPermissionListAccepted.add(new PermissionInfo(permission));
@@ -193,14 +206,41 @@ public class PermissionUtil {
     }
 
     /**
+     * 检查小米的单个权限是否被允许
+     */
+    @TargetApi(Build.VERSION_CODES.M)
+    private int checkSinglePermissionForXiaoMi(Activity activity, String permission) {
+        if (activity == null) {
+            return -1;
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            return checkSinglePermission(activity, permission);
+        }
+        int auth = ActivityCompat.checkSelfPermission(activity, permission);
+        AppOpsManager appOpsManager = (AppOpsManager) activity.getSystemService(Context.APP_OPS_SERVICE);
+        int checkOp = appOpsManager.checkOp(AppOpsManager.permissionToOp(permission)
+                , android.os.Process.myUid(), activity.getPackageName());
+        if (auth == PackageManager.PERMISSION_GRANTED && checkOp == AppOpsManager.MODE_ALLOWED) {
+            return PERMISSION_GRANTED;
+        }
+        if (auth == PackageManager.PERMISSION_GRANTED && checkOp == AppOpsManager.MODE_IGNORED) {
+            return PERMISSION_DENIED;
+        }
+        return PERMISSION_DENIED;
+    }
+
+    /**
      * 通过开启一个新的activity作为申请权限的媒介
      */
     private void requestPermissions(Activity activity) {
         if (activity == null) {
             return;
         }
+        String tag = this.toString();
+        HelpActivity.addPermissionUtil(tag, this);
         Intent intent = new Intent(activity, HelpActivity.class);
         intent.putExtra(KEY_PERMISSION_LIST, mPermissions.toArray(new String[]{}));
+        intent.putExtra(KEY_PERMISSION_TAG, tag);
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         activity.startActivity(intent);
     }
@@ -232,12 +272,23 @@ public class PermissionUtil {
                 }
             }
             if (deniedPermissionList.size() != 0) {
-                onDenied(deniedPermissionList);
+                if (!onDenied(deniedPermissionList)) {
+                    //使用默认的PermissionDialog引导用户打开权限
+                    showPermissionDialog(mActivity, deniedPermissionList);
+                }
                 isAllGranted = false;
             }
             if (needRationalPermissionList.size() != 0) {
                 showRational(needRationalPermissionList);
                 isAllGranted = false;
+            }
+            if (deniedPermissionList.size() != 0 || needRationalPermissionList.size() != 0) {
+                ArrayList<PermissionInfo> notAgreePermissions = new ArrayList<>();
+                notAgreePermissions.addAll(deniedPermissionList);
+                notAgreePermissions.addAll(needRationalPermissionList);
+                if (mResultCallBack != null) {
+                    mResultCallBack.onNotAgree(notAgreePermissions);
+                }
             }
             if (mPermissionListAccepted.size() != 0 && mResultCallBack != null) {
                 onGranted(mPermissionListAccepted);
@@ -268,17 +319,19 @@ public class PermissionUtil {
     /**
      * 权限申请被用户否定之后的回调方法,这个主要是当用户点击否定的同时点击了不在弹出,
      * 那么当再次申请权限,此方法会被调用
+     *
+     * @return true表示自己处理，不使用默认的PermissionDialog引导用户打开权限设置
      */
-    private void onDenied(List<PermissionInfo> list) {
+    private boolean onDenied(List<PermissionInfo> list) {
         if (mResultCallBack == null) {
-            return;
+            return false;
         }
-        if (list == null || list.size() == 0) return;
+        if (list == null || list.size() == 0) return false;
         String[] permissions = new String[list.size()];
         for (int i = 0; i < list.size(); i++) {
             permissions[i] = list.get(i).getName();
         }
-        mResultCallBack.onDenied(permissions);
+        return mResultCallBack.onDenied(permissions);
     }
 
     /**
@@ -295,6 +348,17 @@ public class PermissionUtil {
             permissions[i] = list.get(i).getName();
         }
         mResultCallBack.onRationalShow(permissions);
+    }
+
+    /**
+     * 展示引导用户设置权限的Dialog
+     */
+    private void showPermissionDialog(Activity activity, List<PermissionInfo> list) {
+        if (list.isEmpty()) return;
+        if (activity == null) return;
+        PermissionDialog permissionDialog = new PermissionDialog(activity);
+        permissionDialog.setMessage(list);
+        permissionDialog.show();
     }
 
 }

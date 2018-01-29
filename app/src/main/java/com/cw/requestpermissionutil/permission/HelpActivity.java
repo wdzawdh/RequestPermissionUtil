@@ -1,4 +1,4 @@
-package com.cw.requestpermissionutil;
+package com.cw.requestpermissionutil.permission;
 
 import android.annotation.TargetApi;
 import android.app.Activity;
@@ -8,7 +8,13 @@ import android.os.Bundle;
 import android.support.annotation.NonNull;
 import android.support.v4.app.ActivityCompat;
 
+import java.util.HashMap;
+import java.util.Map;
+
 public class HelpActivity extends Activity {
+
+    private static Map<String, PermissionUtil> sPermissionUtilMap = new HashMap<>();
+    private String mTag;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -26,6 +32,7 @@ public class HelpActivity extends Activity {
     @TargetApi(Build.VERSION_CODES.M)
     private void handleIntent(Intent intent) {
         String[] permissions = intent.getStringArrayExtra(PermissionUtil.KEY_PERMISSION_LIST);
+        mTag = intent.getStringExtra(PermissionUtil.KEY_PERMISSION_TAG);
         int requestCode = intent.getIntExtra("requestCode", PermissionUtil.PERMISSION_REQUEST_CODE);
         ActivityCompat.requestPermissions(this, permissions, requestCode);
     }
@@ -37,7 +44,15 @@ public class HelpActivity extends Activity {
 
     @Override
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
-        PermissionUtil.getInstance().onRequestPermissionResult(this, requestCode, permissions, grantResults);
+        PermissionUtil permissionUtil = sPermissionUtilMap.get(mTag);
+        if (permissionUtil != null) {
+            permissionUtil.onRequestPermissionResult(this, requestCode, permissions, grantResults);
+            sPermissionUtilMap.remove(mTag);
+        }
         finish();
+    }
+
+    public static void addPermissionUtil(String tag, PermissionUtil permissionUtil) {
+        sPermissionUtilMap.put(tag, permissionUtil);
     }
 }
